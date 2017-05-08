@@ -1,0 +1,10 @@
+[Unit]
+Description=An HTTP server to communicate with a LCD display via an Arduino
+After=network.target
+[Service]
+Restart=always
+Type=simple
+WorkingDirectory=/opt/lsd
+ExecStart=/opt/lsd/.virtualenv/bin/python3 lsd.py -p 8000 -d /dev/ttyACM0
+[Install]
+WantedBy=multi-user.target

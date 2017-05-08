@@ -201,9 +201,14 @@ DEFAULT_DEVICE = '/dev/cu.usbmodem1421'
 DEFAULT_PORT = 8081
 DEFAULT_LOGLEVEL = 'INFO'
 
+
 @click.command()
-@click.option('--device', '-d', help='Communicate with Arduino using device TEXT.', default=DEFAULT_DEVICE, show_default=True)
-@click.option('--port', '-p', type=int, help='Bind and listen to this TCP port.', default=DEFAULT_PORT, show_default=True)
+@click.option(
+    '--device', '-d', help='Communicate with Arduino using device TEXT.', default=DEFAULT_DEVICE, show_default=True
+)
+@click.option(
+    '--port', '-p', type=int, help='Bind and listen to this TCP port.', default=DEFAULT_PORT, show_default=True
+)
 @click.option('--loglevel', '-l', help='Set the log level to TEXT.', default=DEFAULT_LOGLEVEL, show_default=True)
 def main(device, port, loglevel):
     """

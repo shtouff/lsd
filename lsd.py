@@ -90,6 +90,7 @@ class LSDContext(object):
         self.button_pin = button_pin
 
     def get_last_acked_message(self):
+        logger.info('The stored message was retrieved: [%s].', self.acked_message)
         return self.acked_message
 
     def lcd_print(self, message='', clear=True):
@@ -104,6 +105,7 @@ class LSDContext(object):
                 self.lcd.printString(message[16:32], 0, 1)
 
     def ack_message(self):
+        logger.info('The button was pressed, ack the message: [%s].', self.current_message)
         self.stop_led_blinker()
         self.stop_button_watcher()
         self.acked_message = self.current_message
@@ -139,6 +141,7 @@ class LSDContext(object):
 
         self.lcd_print(message)
         self.current_message = message
+        logger.info('A new message has been set: [%s].', message)
 
         self.start_button_watcher()
         self.start_led_blinker()

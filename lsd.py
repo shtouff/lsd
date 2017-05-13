@@ -6,12 +6,12 @@ LSD: Liquid Server Display
 """
 import click
 import http.server
+from ipaddress import IPv4Network, IPv6Address, IPv6Network, ip_address
 import json
 import logging
 from nanpy import SerialManager, Lcd, ArduinoApi
 import socket
 import socketserver
-import sys
 import time
 import threading
 
@@ -65,29 +65,92 @@ class ButtonWatcher(StoppableThread):
             self.wait()
 
 
-class LSDContext(object):
-    __instance = None
+class LSDRequestHandler(http.server.BaseHTTPRequestHandler):
+    server_version = 'HTTP/0.1'
+    sys_version = 'LiquidServerDisplay/0.1'
 
+    def get_root(self):
+        preferred_content_type = 'application/json'
+        output = json.dumps({
+            'message': self.server.get_last_acked_message(),
+        })
+
+        self.send_response(200, 'OK')
+        self.send_header('Content-Type', preferred_content_type)
+        self.end_headers()
+
+        self.wfile.write(output.encode())
+
+    def do_GET(self):
+        if not self.server.is_src_ip_allowed(ip_address(self.client_address[0])):
+            self.send_error(401)
+        if self.path == '/':
+            self.get_root()
+        else:
+            self.send_error(404)
+
+    def post_root(self):
+        body = self.rfile.read(int(self.headers['Content-Length'])).decode()
+        message = json.loads(body)['message']
+
+        preferred_content_type = 'application/json'
+        output = json.dumps({
+            'message': message
+        })
+
+        self.server.set_current_message(message)
+
+        self.send_response(200, 'OK')
+        self.send_header('Content-Type', preferred_content_type)
+        self.end_headers()
+
+        self.wfile.write(output.encode())
+
+    def do_POST(self):
+        if not self.server.is_src_ip_allowed(ip_address(self.client_address[0])):
+            self.send_error(401)
+        if self.path == '/':
+            self.post_root()
+        else:
+            self.send_error(404)
+
+
+class LSDServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    # from HTTPServer
+    address_family = socket.AF_INET6
+
+    # LSDServer
     acked_message = ''
     current_message = ''
     led_blinker = None
     button_watcher = None
 
-    @classmethod
-    def create_instance(cls, api, lcd, led_pin, button_pin):
-        LSDContext.__instance = LSDContext(api, lcd, led_pin, button_pin)
-
-    @classmethod
-    def get_instance(cls):
-        if LSDContext is None:
-            raise Exception("please, instantiate first.")
-        return LSDContext.__instance
-
-    def __init__(self, api, lcd, led_pin, button_pin):
+    def __init__(
+            self, server_address, RequestHandlerClass,
+            api, lcd, led_pin, button_pin,
+            ipv4_allowed_prefixes, ipv6_allowed_prefixes
+    ):
+        super().__init__(server_address, RequestHandlerClass)
         self.api = api
         self.lcd = lcd
         self.led_pin = led_pin
         self.button_pin = button_pin
+        self.ipv4_allowed_prefixes = ipv4_allowed_prefixes
+        self.ipv6_allowed_prefixes = ipv6_allowed_prefixes
+
+    def is_src_ip_allowed(self, ip: IPv6Address):
+        # consider ip to be an IPv6Address
+        prefixes = self.ipv6_allowed_prefixes
+        subnet = IPv6Network(ip)
+        if ip.ipv4_mapped is not None:
+            prefixes = self.ipv4_allowed_prefixes
+            subnet = IPv4Network(ip.ipv4_mapped)
+
+        for prefix in prefixes:
+            if prefix.overlaps(subnet):
+                return True
+
+        return False
 
     def get_last_acked_message(self):
         logger.info('The stored message was retrieved: [%s].', self.acked_message)
@@ -147,62 +210,12 @@ class LSDContext(object):
         self.start_led_blinker()
 
 
-class LSDRequestHandler(http.server.BaseHTTPRequestHandler):
-    server_version = 'HTTP/0.1'
-    sys_version = 'LiquidServerDisplay/0.1'
-
-    def __init__(self, request, client_address, cls):
-        super().__init__(request, client_address, cls)
-
-    def get_root(self):
-        preferred_content_type = 'application/json'
-        output = json.dumps({
-            'message': LSDContext.get_instance().get_last_acked_message()
-        })
-
-        self.send_response(200, 'OK')
-        self.send_header('Content-Type', preferred_content_type)
-        self.end_headers()
-
-        self.wfile.write(output.encode())
-
-    def do_GET(self):
-        if self.path == '/':
-            self.get_root()
-        else:
-            self.send_error(404)
-
-    def post_root(self):
-        body = self.rfile.read(int(self.headers['Content-Length'])).decode()
-        message = json.loads(body)['message']
-
-        preferred_content_type = 'application/json'
-        output = json.dumps({
-            'message': message
-        })
-
-        LSDContext.get_instance().set_current_message(message)
-
-        self.send_response(200, 'OK')
-        self.send_header('Content-Type', preferred_content_type)
-        self.end_headers()
-
-        self.wfile.write(output.encode())
-
-    def do_POST(self):
-        if self.path == '/':
-            self.post_root()
-        else:
-            self.send_error(404)
-
-
-class LSDServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    address_family = socket.AF_INET6
-
 
 DEFAULT_DEVICE = '/dev/cu.usbmodem1421'
 DEFAULT_PORT = 8081
 DEFAULT_LOGLEVEL = 'INFO'
+DEFAULT_INET = ['127.0.0.1/32', '127.0.0.2/32']
+DEFAULT_INET6 = ['::1/128', ]
 
 
 @click.command()
@@ -213,12 +226,19 @@ DEFAULT_LOGLEVEL = 'INFO'
     '--port', '-p', type=int, help='Bind and listen to this TCP port.', default=DEFAULT_PORT, show_default=True
 )
 @click.option('--loglevel', '-l', help='Set the log level to TEXT.', default=DEFAULT_LOGLEVEL, show_default=True)
-def main(device, port, loglevel):
+@click.option(
+    '--inet', '-4', help='Allowed source ipv4 prefixes.', default=DEFAULT_INET, show_default=True, multiple=True
+)
+@click.option(
+    '--inet6', '-6', help='Allowed source ipv6 prefixes.', default=DEFAULT_INET6, show_default=True, multiple=True
+)
+def main(device, port, loglevel, inet, inet6):
     """
     An HTTP server, which will accept JSON-formatted messages and print them to a LCD display. The message can be 
     acknowledged by the reader, using a key switch. LCD and key switch are accessed via an Arduino UNO.
     """
     logging.basicConfig(level=loglevel)
+
     connection = SerialManager(device=device)
     api = ArduinoApi(connection=connection)
     """
@@ -232,9 +252,13 @@ def main(device, port, loglevel):
     d7: green/yellow: 12
     """
     lcd = Lcd([7, 8, 9, 10, 11, 12], [16, 2], connection=connection)
-    LSDContext.create_instance(api=api, lcd=lcd, led_pin=6, button_pin=2)
     logger.info('Starting LSD on port %s ...', port)
-    LSDServer(("", port), LSDRequestHandler).serve_forever()
+    LSDServer(
+        ("", port), LSDRequestHandler,
+        api=api, lcd=lcd, led_pin=6, button_pin=2,
+        ipv4_allowed_prefixes=[IPv4Network(x) for x in inet],
+        ipv6_allowed_prefixes=[IPv6Network(x) for x in inet6],
+    ).serve_forever()
 
 
 if __name__ == '__main__':
